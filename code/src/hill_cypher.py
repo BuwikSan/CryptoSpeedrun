@@ -40,18 +40,28 @@ class Hills_cypher:
 
     def generate_new_set_of_keys(self, force=True):
         def matrix_generation(rounds):
+            def key_pair_generation():
+                while True:
+                    try:
+                        key = self._generate_key()
+                        inverse_key = self._inverse_key_matrix(key)
+                        return key, inverse_key
+                    except ValueError:
+                        continue
             keys = []
+            inverse_keys = []
             for _ in range(rounds):
-                keys.append(self._generate_key())
-            return keys
+                key, inverse_key = key_pair_generation()
+                keys.append(key)
+                inverse_keys.append(inverse_key)
+            return keys, inverse_keys
 
         if len(self.keys) > 0 and not force:
             # Keys already exist and force is False, don't regenerate
             return False
         else:
             # Generate new keys
-            self.keys = matrix_generation(self.rounds)
-            self.inverse_keys = [self._inverse_key_matrix(key) for key in self.keys]
+            self.keys, self.inverse_keys = matrix_generation(self.rounds)
             return True
 
 
@@ -94,19 +104,20 @@ class Hills_cypher:
                 new_vectors.append(cypher_operation(vector, key))
             return np.array(new_vectors)
 
-        for key in self.keys if not decypher else self.inverse_keys:
+        for key in self.keys if not decypher else self.inverse_keys[::-1]:
             vectors = cypher_round(vectors, key)
 
         new_vectors = []
         for vector in vectors:
             new_vectors.append(list(vector))
-
+        
         final_vectors = self._text_number_transformation(new_vectors)
         final_string_stream = ""
         for i in range(len(final_vectors)):
             final_string_stream += "".join(final_vectors[i])
-        if decypher:
+        if decypher and self.padding_length > 0:
             final_string_stream = final_string_stream[:-self.padding_length]
+            print(final_string_stream)
         return final_string_stream
 
     def cypher(self, text):
