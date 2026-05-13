@@ -30,7 +30,7 @@ DK_PKE_SZ = 384 * K        # PKE secret key:    768 bytes
 def _G(b):
     """G = SHA3-512, rozděl na dva 32bytové seedy.
 
-    Používá se na domain separation (hashování s H(ek)) a odvozování klíčů.
+    Používá se na domain separation (hashování s H(vk)) a odvozování klíčů.
     """
     h = hashlib.sha3_512(b).digest()  # SHA3-512 → 64 bytů
     return h[:32], h[32:]             # vrátí (left 32B, right 32B)
@@ -63,7 +63,7 @@ def _J(z, c):
     """J = SHAKE-256 implicit-rejection KDF.
 
     Když decaps selže, vrátíš J(z, c) místo signalizovat chybu.
-    z je tajný → útočník nemůže vyrábět J(z, c).
+    z je privátní → útočník nemůže vyrábět J(z, c).
     """
     return hashlib.shake_256(z + c).digest(32)
 
@@ -153,6 +153,13 @@ def _mul_ntt(f, g):
 def _add(a, b): return [(x+y) % Q for x, y in zip(a, b)]
 def _sub(a, b): return [(x-y) % Q for x, y in zip(a, b)]
 
+
+
+
+
+
+
+
 # ============================================================
 # SAMPLING  (Algorithms 7–8)
 # ============================================================
@@ -209,6 +216,8 @@ def _sample_cbd(eta, prf_bytes):
 # ============================================================
 # ENCODE / DECODE / COMPRESS / DECOMPRESS  (Algorithms 4–6)
 # ============================================================
+
+
 def _byte_encode(f, d):
     """ByteEncode_d: zabal N d-bitových koef. do 32d bytů.
 
@@ -258,44 +267,44 @@ def _decompress(f, d):
 # ============================================================
 # K-PKE — IND-CPA secure encryption  (Algorithms 13–15)
 # ============================================================
-def _pke_keygen(d):
-    """K-PKE KeyGen: vytvoř veřejný klíč (t, A) a tajný klíč (s).
+def _pke_keygen(keygen_seed):
+    """K-PKE KeyGen: vytvoř veřejný klíč (t, A) a privátní klíč (s).
 
     Args:
         d: 32bytový seed
     Returns:
         ek_pke: veřejný klíč (800 bytů) = t[0]||t[1]||ρ
-        dk_pke: tajný klíč (768 bytů) = s[0]||s[1] (v NTT doméně)
+        pk_pke: privátní klíč (768 bytů) = s[0]||s[1] (v NTT doméně)
     """
     # Domain separation: hash d s K (module rank) pro generování seedů
-    rho, sigma = _G(d + bytes([K]))
+    rho, sigma = _G(keygen_seed + bytes([K]))
     # ρ = seed pro veřejnou matici A
     # σ = seed pro šum (s, e)
 
     # Vygeneruj veřejnou matici A v NTT doméně (K×K polynomů)
     A = [[_sample_ntt(_XOF(rho, i, j)) for j in range(K)] for i in range(K)]
 
-    # Vygeneruj tajný vektor s a chybový vektor e (oba K polynomů)
+    # Vygeneruj privátní vektor s a chybový vektor e (oba K polynomů)
     # CBD vzorkování, pak transformace do NTT domény
     s_hat = [ntt(_sample_cbd(ETA1, _PRF(ETA1, sigma, i)))     for i in range(K)]
     e_hat = [ntt(_sample_cbd(ETA1, _PRF(ETA1, sigma, K + i))) for i in range(K)]
 
     # Vypočítej veřejný vektor t = A·s + e (v NTT doméně)
-    t_hat = []
+    p_hat = []
     for i in range(K):
         ti = [0] * N  # i-tý řádek výsledku
         for j in range(K):
             ti = _add(ti, _mul_ntt(A[i][j], s_hat[j]))  # sum_j A[i][j] * s[j]
-        t_hat.append(_add(ti, e_hat[i]))  # přidej chybu
+        p_hat.append(_add(ti, e_hat[i]))  # přidej chybu
 
     # Kóduj a vrátí klíče
-    ek = b''.join(_byte_encode(t_hat[i], 12) for i in range(K)) + rho
-    dk = b''.join(_byte_encode(s_hat[i], 12) for i in range(K))
-    return ek, dk
+    vk = b''.join(_byte_encode(p_hat[i], 12) for i in range(K)) + rho
+    pk = b''.join(_byte_encode(s_hat[i], 12) for i in range(K))
+    return vk, pk
 
-def _pke_encrypt(ek, m, r):
-    t_hat = [_byte_decode(ek[384*i : 384*(i+1)], 12) for i in range(K)]
-    rho   = ek[384*K:]
+def _pke_encrypt(vk, m, r):
+    p_hat = [_byte_decode(vk[384*i : 384*(i+1)], 12) for i in range(K)]
+    rho   = vk[384*K:]
     A     = [[_sample_ntt(_XOF(rho, i, j)) for j in range(K)] for i in range(K)]
 
     r_hat = [ntt(_sample_cbd(ETA1, _PRF(ETA1, r, i)))     for i in range(K)]
@@ -314,7 +323,7 @@ def _pke_encrypt(ek, m, r):
     # v = t^T · r + e2 + mu
     v_hat = [0] * N
     for i in range(K):
-        v_hat = _add(v_hat, _mul_ntt(t_hat[i], r_hat[i]))
+        v_hat = _add(v_hat, _mul_ntt(p_hat[i], r_hat[i]))
     v = _add(_add(intt(v_hat), e2), mu)
 
     # Kompresuj a kóduj ciphertext (zmenší velikost na DU=10 a DV=4 bitů)
@@ -322,11 +331,11 @@ def _pke_encrypt(ek, m, r):
     c2 = _byte_encode(_compress(v, DV), DV)
     return c1 + c2  # vrátí 640+128=768 bytů
 
-def _pke_decrypt(dk, c):
-    """K-PKE Decrypt: dešifruj ciphertext c tajným klíčem dk.
+def _pke_decrypt(pk, c):
+    """K-PKE Decrypt: dešifruj ciphertext c tajným klíčem pk.
 
     Args:
-        dk: tajný klíč (768 bytů) = s[0]||s[1] v NTT doméně
+        pk: privátní klíč (768 bytů) = s[0]||s[1] v NTT doméně
         c: ciphertext (768 bytů) = c1||c2
     Returns:
         Zpráva m (32 bytů)
@@ -334,8 +343,8 @@ def _pke_decrypt(dk, c):
     # Dekóduj ciphertext (decompressuj z menších velikostí)
     u     = [_decompress(_byte_decode(c[32*DU*i : 32*DU*(i+1)], DU), DU) for i in range(K)]
     v     = _decompress(_byte_decode(c[32*DU*K:], DV), DV)
-    # Dekóduj tajný klíč
-    s_hat = [_byte_decode(dk[384*i : 384*(i+1)], 12) for i in range(K)]
+    # Dekóduj privátní klíč
+    s_hat = [_byte_decode(pk[384*i : 384*(i+1)], 12) for i in range(K)]
 
     # Vypočítej w = v - s^T · u (malý šum se zruší, zbude přibližně m)
     w = list(v)
@@ -348,67 +357,65 @@ def _pke_decrypt(dk, c):
 #           (Algorithms 19–21)
 # ============================================================
 def keygen():
-    """ML-KEM.KeyGen() → (ek, dk) - Vytvoření páru klíčů.
+    """ML-KEM.KeyGen() → (vk, pk) - Vytvoření páru klíčů.
 
     Returns:
-        ek: encapsulation key (800 bytes) - veřejný klíč
-        dk: decapsulation key (1632 bytes) - tajný klíč
-            Struktura: dk_pke (768B) || ek (800B) || H(ek) (32B) || z (32B)
+        vk: encapsulation key (800 bytes) - veřejný klíč
+        pk: decapsulation key (1632 bytes) - privátní klíč
+            Struktura: pk_pke (768B) || vk (800B) || H(vk) (32B) || ir_seed (32B)
     """
-    d = os.urandom(32)   # random seed pro keygen
-    z = os.urandom(32)   # random seed pro implicit rejection (při selhání decaps)
+    keygen_seed = os.urandom(32)   # random seed pro keygen
+    ir_seed = os.urandom(32)   # random seed pro implicit rejection (při selhání decaps)
 
-    ek_pke, dk_pke = _pke_keygen(d)  # vytvoř PKE klíče
+    ek_pke, pk_pke = _pke_keygen(keygen_seed)  # vytvoř PKE klíče
 
-    ek = ek_pke  # veřejný klíč
-    dk = dk_pke + ek + _H(ek) + z  # tajný klíč (4 části)
+    vk = ek_pke  # veřejný klíč
+    pk = pk_pke + vk + _H(vk) + ir_seed  # privátní klíč (4 části)
 
-    return ek, dk
+    return vk, pk
 
-
-###################################### Domain separation pomocí veřejného klíče pomocí _G() ######################################
-def encaps(ek):
-    """ML-KEM.Encaps(ek) → (K, c) - Encapsulace sdíleného tajemství.
+def encaps(vk):
+    """ML-KEM.Encaps(vk) → (K, c) - Encapsulace sdíleného tajemství.
 
     Generuješ náhodné číslo m, šifruješ ho, a vrátíš klíč K a ciphertext c.
 
     Returns:
         K: shared secret (32 bytes) - sdílený klíč
-        c: ciphertext (768 bytes) - zašifrované m pod veřejným klíčem ek
+        c: ciphertext (768 bytes) - zašifrované m pod veřejným klíčem vk
     """
     m = os.urandom(32)           # náhodná 32bytová zpráva
-    K_key, r = _G(m + _H(ek))   # hashovej m+H(ek) a rozdělí na K a r
+    # Domain separation pomocí veřejného klíče pomocí _G()
+    K_key, r = _G(m + _H(vk))   # hashovej m+H(vk) a rozdělí na K a r
                                  # K = sdílený klíč
                                  # r = randomness pro šifrování
-    c = _pke_encrypt(ek, m, r)   # šifruj m pod ek s randomness r
+    c = _pke_encrypt(vk, m, r)   # šifruj m pod vk s randomness r
 
     return K_key, c
 
-def decaps(dk, c):
-    """ML-KEM.Decaps(dk, c) → K - Decapsulace sdíleného tajemství.
+def decaps(pk, c):
+    """ML-KEM.Decaps(pk, c) → K - Decapsulace sdíleného tajemství.
 
     Dešifruješ zprávu m z ciphertextu c, znovuencryptuješ ji, a zkontroluj
     Fujisaki-Okamoto: pokud se ciphertext shoduje, vrátíš správný klíč K'.
-    Pokud ne (útok/poškozená data), vrátíš fake klíč J(z, c).
+    Pokud ne (útok/poškozená data), vrátíš fake klíč J(ir_seed, c).
 
     Returns:
         K: shared secret (32 bytes) - buď správný nebo pseudonáhodný (bez signálu)
     """
-    # Rozparsuj dk na 4 komponenty
-    dk_pke = dk[:DK_PKE_SZ]                           # PKE tajný klíč (768B)
-    ek     = dk[DK_PKE_SZ : DK_PKE_SZ + EK_SIZE]     # veřejný klíč (800B)
-    h      = dk[DK_PKE_SZ + EK_SIZE : DK_PKE_SZ + EK_SIZE + 32]  # H(ek) (32B)
-    z      = dk[DK_PKE_SZ + EK_SIZE + 32:]           # implicit rejection seed (32B)
+    # Rozparsuj pk na 4 komponenty
+    pk_pke = pk[:DK_PKE_SZ]                           # PKE privátní klíč (768B)
+    vk     = pk[DK_PKE_SZ : DK_PKE_SZ + EK_SIZE]     # veřejný klíč (800B)
+    h      = pk[DK_PKE_SZ + EK_SIZE : DK_PKE_SZ + EK_SIZE + 32]  # H(vk) (32B)
+    ir_seed = pk[DK_PKE_SZ + EK_SIZE + 32:]           # implicit rejection seed (32B)
 
     # Dešifruj zprávu
-    m_prime = _pke_decrypt(dk_pke, c)                # vezmi tajné s, vrátí m'
+    m_prime = _pke_decrypt(pk_pke, c)                # vezmi tajné s, vrátí m'
 
     # Znovuencrypt: "simuluj" encaps s m_prime
     K_prime, r_p = _G(m_prime + h)                   # spočítej K' a r'
-    c_prime = _pke_encrypt(ek, m_prime, r_p)         # re-encrypt s m' a r'
+    c_prime = _pke_encrypt(vk, m_prime, r_p)         # re-encrypt s m' a r'
 
 
-###################################### Fujisaki-Okamoto pomocí _J() ######################################
     # Fujisaki-Okamoto: přesnost ověří
     if c == c_prime:
         # ✓ Ciphertext je správný → vrátí správný klíč
@@ -416,24 +423,24 @@ def decaps(dk, c):
     else:
         # ✗ Ciphertext je zmanipulovaný → vrátí fake (seedem z) (implicit rejection)
         # Útočník nemůže rozlišit!
-        return _J(z, c)
+        return _J(ir_seed, c)
 
 # ============================================================
 # TEXT ENCRYPTION HELPERS  (KEM + SHAKE-256 stream cipher)
 # ============================================================
-def encrypt_text(ek, plaintext: str) -> tuple:
+def encrypt_text(vk, plaintext: str) -> tuple:
     """Hybrid encrypt: ML-KEM + SHAKE-256 stream cipher.
 
     Encapsuluješ sdílený klíč K, generuješ keystream z K, XORuješ text.
 
     Args:
-        ek: veřejný ML-KEM klíč
+        vk: veřejný ML-KEM klíč
         plaintext: text k šifrování
 
     Returns:
         (c_kem, ct): KEM ciphertext (768B) + encrypted text (variable length)
     """
-    K_key, c_kem = encaps(ek)  # vygeneruj K a ciphertext
+    K_key, c_kem = encaps(vk)  # vygeneruj K a ciphertext
 
     # Převeď text na UTF-8 byty
     pt = plaintext.encode('utf-8')
@@ -446,20 +453,20 @@ def encrypt_text(ek, plaintext: str) -> tuple:
 
     return c_kem, ct
 
-def decrypt_text(dk, c_kem: bytes, ct: bytes) -> str:
+def decrypt_text(pk, c_kem: bytes, ct: bytes) -> str:
     """Hybrid decrypt: ML-KEM + SHAKE-256 stream cipher.
 
     Decapsuluješ K z c_kem, generuješ keystream z K, XORuješ ciphertext.
 
     Args:
-        dk: tajný ML-KEM klíč
+        pk: privátní ML-KEM klíč
         c_kem: KEM ciphertext (768 bytes)
         ct: encrypted text (variable length)
 
     Returns:
         Dešifrovaný text, nebo hex-dump garbage pokud selže decryption
     """
-    K_key = decaps(dk, c_kem)  # obnovíš K (buď správný nebo fake)
+    K_key = decaps(pk, c_kem)  # obnovíš K (buď správný nebo fake)
 
     # Generuj stejný keystream
     ks = hashlib.shake_256(K_key).digest(len(ct))
