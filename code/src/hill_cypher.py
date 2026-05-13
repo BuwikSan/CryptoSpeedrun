@@ -1,9 +1,5 @@
 import numpy as np
 from sympy import Matrix
-CHARS = ["A", "Á", "B", "C", "Č", "D", "Ď", "E", "É", "Ě", "F", "G", "H", "I", "Í", "J", "K", "L", "M", "N", "Ň", "O", "Ó", "P", "Q", "R", "Ř", "S", "Š", "T", "Ť", "U", "Ú", "Ů", "V", "W", "X", "Y", "Ý", "Z", "Ž", " ", "."]
-enumerated_characters = dict(enumerate(CHARS))
-encharactered_numbers = {v: k for k, v in enumerated_characters.items()}
-
 
 class Hills_cypher:
     CYPHER_ALPHABET = ["A", "Á", "B", "C", "Č", "D", "Ď", "E", "É", "Ě", "F", "G", "H", "I", "Í", "J", "K", "L", "M", "N", "Ň", "O", "Ó", "P", "Q", "R", "Ř", "S", "Š", "T", "Ť", "U", "Ú", "Ů", "V", "W", "X", "Y", "Ý", "Z", "Ž", " ", "."]
@@ -67,8 +63,8 @@ class Hills_cypher:
 
     # formatting and encoding -------------------------------------------------------------------------------
     def _text_number_transformation(self, vectors):
-        dict = encharactered_numbers if isinstance(vectors[0][0], str) else enumerated_characters
-
+        dict = self.encharactered_numbers if isinstance(vectors[0][0], str) else self.enumerated_characters
+        print(dict)
         for i in range(len(vectors)):
             for j in range(len(vectors[i])):
                 vectors[i][j] = dict[vectors[i][j]]
@@ -77,7 +73,7 @@ class Hills_cypher:
     def _text_preprocessing(self, text, decypher=False):
         def text_sanitization(text):
             text = text.upper()
-            text = ''.join(filter(lambda x: x in CHARS, text))
+            text = ''.join(filter(lambda x: x in self.CYPHER_ALPHABET, text))
             self.padding_length = (self.key_len - (len(text) % self.key_len))
             text = (text + "Q"*self.padding_length)
             return text
@@ -110,7 +106,7 @@ class Hills_cypher:
         new_vectors = []
         for vector in vectors:
             new_vectors.append(list(vector))
-        
+
         final_vectors = self._text_number_transformation(new_vectors)
         final_string_stream = ""
         for i in range(len(final_vectors)):
